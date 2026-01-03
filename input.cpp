@@ -1,38 +1,38 @@
 #include "config.h"
 #include "input.h"
 
-static inline bool isPressedPullup(uint8_t pin) { return digitalRead(pin) == LOW; }
+static inline bool pressed(uint8_t pin) { return digitalRead(pin) == LOW; }
 
-struct DebouncedButton {
-  uint8_t pin = 0;
-  bool stable = false;
-  bool lastRead = false;
-  uint32_t lastChange = 0;
+// ===== OK long/short =====
+static bool     okPrev = false;
+static bool     okLongFired = false;
+static uint32_t okPressMs = 0;
+static const uint16_t OK_LONG_MS = 700;
 
-  void begin(uint8_t p) {
-    pin = p;
-    stable = isPressedPullup(pin);
-    lastRead = stable;
-    lastChange = millis();
-  }
+// ===== MENU short =====
+static bool menuPrev = false;
+static uint32_t menuLastMs = 0;
+static const uint16_t MENU_GUARD_MS = 60;
 
-  // Rising edge: released -> pressed
-  bool pressedEdge(uint16_t db_ms = 25) {
-    bool r = isPressedPullup(pin);
-    if (r != lastRead) {
-      lastRead = r;
-      lastChange = millis();
-    }
-    if ((millis() - lastChange) >= db_ms && stable != lastRead) {
-      bool old = stable;
-      stable = lastRead;
-      if (!old && stable) return true;
-    }
-    return false;
-  }
-};
+// ===== UP/DOWN repeat (общий, мягкий)
+// (Wizard Ø ускоряется отдельно в .ino, здесь просто удобный repeat)
+static bool     upPrev = false, dnPrev = false;
+static uint32_t upPressMs = 0, dnPressMs = 0;
+static uint32_t upLastRptMs = 0, dnLastRptMs = 0;
 
-static DebouncedButton bStart, bUp, bDown, bOk, bMenu;
+static int8_t repeatStep(uint32_t now, uint32_t pressMs, uint32_t &lastRptMs) {
+  uint32_t held = now - pressMs;
+
+  uint16_t interval;
+  if      (held < 350)  interval = 180;
+  else if (held < 900)  interval = 120;
+  else if (held < 1600) interval = 80;
+  else                  interval = 55;
+
+  if ((now - lastRptMs) < interval) return 0;
+  lastRptMs = now;
+  return 1;
+}
 
 // ===== POT filter =====
 static uint16_t potBuf[16];
@@ -71,7 +71,7 @@ static void potUpdate() {
 uint16_t potGetAvgAdc() { return potAvg; }
 
 void inputBegin() {
-  pinMode(PIN_START_BTN, INPUT_PULLUP);
+  pinMode(PIN_START_BTN, INPUT_PULLUP); // START читается в .ino (hard)
 
   pinMode(PIN_BTN_UP,   INPUT_PULLUP);
   pinMode(PIN_BTN_DOWN, INPUT_PULLUP);
@@ -80,11 +80,19 @@ void inputBegin() {
 
   pinMode(PIN_POT, INPUT);
 
-  bStart.begin(PIN_START_BTN);
-  bUp.begin(PIN_BTN_UP);
-  bDown.begin(PIN_BTN_DOWN);
-  bOk.begin(PIN_BTN_OK);
-  bMenu.begin(PIN_BTN_MENU);
+  uint32_t now = millis();
+
+  okPrev = pressed(PIN_BTN_OK);
+  okPressMs = now;
+  okLongFired = false;
+
+  menuPrev = pressed(PIN_BTN_MENU);
+  menuLastMs = now;
+
+  upPrev = pressed(PIN_BTN_UP);
+  dnPrev = pressed(PIN_BTN_DOWN);
+  upPressMs = dnPressMs = now;
+  upLastRptMs = dnLastRptMs = now;
 
   potSetFilterN(8);
   potUpdate();
@@ -92,13 +100,47 @@ void inputBegin() {
 
 void inputPoll(InputEvents &ev) {
   ev = {};
+  uint32_t now = millis();
 
-  if (bUp.pressedEdge())   ev.encStep = +1;
-  if (bDown.pressedEdge()) ev.encStep = -1;
+  bool u = pressed(PIN_BTN_UP);
+  bool d = pressed(PIN_BTN_DOWN);
+  bool o = pressed(PIN_BTN_OK);
+  bool m = pressed(PIN_BTN_MENU);
 
-  ev.encClick   = bOk.pressedEdge();     // OK
-  ev.menuClick  = bMenu.pressedEdge();   // MENU/BACK
-  ev.startClick = bStart.pressedEdge();  // START/STOP
+  // MENU short (guarded)
+  if (m && !menuPrev) {
+    if ((uint16_t)(now - menuLastMs) >= MENU_GUARD_MS) {
+      ev.menuClick = true;
+      menuLastMs = now;
+    }
+  }
+
+  // UP/DOWN edge + repeat
+  if (u && !upPrev) { ev.encStep += +1; upPressMs = now; upLastRptMs = now; }
+  if (d && !dnPrev) { ev.encStep += -1; dnPressMs = now; dnLastRptMs = now; }
+  if (u) ev.encStep += repeatStep(now, upPressMs, upLastRptMs);
+  if (d) ev.encStep -= repeatStep(now, dnPressMs, dnLastRptMs);
+
+  // OK short/long
+  if (o && !okPrev) {
+    okPressMs = now;
+    okLongFired = false;
+  }
+  if (o && !okLongFired && (uint16_t)(now - okPressMs) >= OK_LONG_MS) {
+    ev.encLong = true;
+    okLongFired = true;
+  }
+  if (!o && okPrev) {
+    if (!okLongFired) ev.encClick = true;
+  }
+
+  // START тут не делаем (hard-read в .ino)
+  ev.startClick = false;
+
+  okPrev = o;
+  menuPrev = m;
+  upPrev = u;
+  dnPrev = d;
 
   potUpdate();
 }

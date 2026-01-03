@@ -52,8 +52,8 @@ void uiClear() { lcd.clear(); }
 
 void uiDrawReady(const Settings &S) {
   printLine(0, "MQL READY");
-  printLine(1, "START: Wizard");
-  printLine(2, "ENC: Menu");
+  printLine(1, "START: Wizard/Run");
+  printLine(2, "MENU: Settings");
   char line[21];
   snprintf(line, sizeof(line), "Last: %s O%umm",
            (S.material == MAT_STEEL) ? "Steel" : "Al",
@@ -65,7 +65,7 @@ void uiDrawWizMaterial(const Settings &S) {
   printLine(0, "Select material");
   printLine(1, (S.material == MAT_STEEL) ? "> Steel" : "  Steel");
   printLine(2, (S.material == MAT_ALUMINUM) ? "> Aluminum" : "  Aluminum");
-  printLine(3, "ENC=Sel OK=Click");
+  printLine(3, "UP/DN Sel  OK Next");
 }
 
 void uiDrawWizDiameter(const Settings &S) {
@@ -74,7 +74,7 @@ void uiDrawWizDiameter(const Settings &S) {
   snprintf(line, sizeof(line), "O: %umm", (unsigned)S.cutter_mm);
   printLine(1, line);
   printLine(2, "Range: 3..50");
-  printLine(3, "Turn ENC, Click=OK");
+  printLine(3, "UP/DN Chg  OK Next");
 }
 
 void uiDrawWizRecommend(const Settings &S, int32_t rec_u_x100, int32_t set_u_x100, int32_t potMin_u_x100, int32_t potMax_u_x100) {
@@ -120,14 +120,14 @@ void uiDrawRun(const Settings &S, int32_t rec_u_x100, int32_t set_u_x100, bool r
   printLine(0, l0);
   printLine(1, l1);
   printLine(2, l2);
-  printLine(3, "STOP=BTN  ENC=Menu");
+  printLine(3, "STOP=START MENU=Back");
 }
 
 void uiDrawMenu(bool editing, const char line1[21], const char line2[21], const char line3[21]) {
   printLine(0, editing ? "MENU (edit)" : "MENU");
   printLine(1, line1);
   printLine(2, line2);
-  printLine(3, line3);
+  printLine(3, "UP/DN Move OK Edit");
 }
 
 void uiDrawCalRun(uint16_t totalSec, uint16_t secondsLeft) {
@@ -165,7 +165,7 @@ void uiDrawCalInputDigits(int32_t ml_x100, uint8_t digitIdx) {
   if (col < 20) cur[col] = '^';
 
   printLine(0, "CAL: Enter ml");
-  printLine(1, "ENC=chg OK=next/save");
+  printLine(1, "UP/DN chg OK next");
   printLine(2, l2);
   printLine(3, cur);
 }
