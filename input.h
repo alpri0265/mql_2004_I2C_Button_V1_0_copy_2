@@ -2,10 +2,11 @@
 #include <Arduino.h>
 
 struct InputEvents {
-  int8_t  encStep;     // UP/DOWN: +1 / -1
-  bool    encClick;    // OK
-  bool    menuClick;   // MENU/BACK
-  bool    startClick;  // START/STOP
+  int8_t  encStep;      // UP/DOWN: +1 / -1 (может накапливаться при удержании)
+  bool    encClick;     // OK short
+  bool    encLong;      // OK long
+  bool    menuClick;    // MENU/BACK short
+  bool    startClick;   // START/STOP short
 };
 
 void inputBegin();
