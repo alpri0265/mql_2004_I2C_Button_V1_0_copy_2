@@ -1,0 +1,10 @@
+# MQL Controller — V1.1 TODO
+
+## Planned features
+- [ ] PULSE mode implementation
+- [ ] Menu acceleration for Kmin / Kmax / AlFactor / PumpGain
+- [ ] Extra safety STOP logic
+
+## Rules
+- main branch is always stable
+- no direct commits to main
