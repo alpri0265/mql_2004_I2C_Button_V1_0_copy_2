@@ -9,8 +9,8 @@
 
 static AppState state = ST_READY;
 static MenuState menu;
-static bool wizardDone = false;  // Wizard один раз, дальше START/STOP
 
+static bool wizardDone = false;  // Wizard один раз, дальше START/STOP
 
 static int32_t rec_x100 = 55;
 static int32_t potMin_x100 = 27;
@@ -20,19 +20,20 @@ static int32_t set_x100 = 55;
 static bool pulseOn = true;
 static uint32_t pulseMs = 0;
 
+// HARD START (direct pin)
+static bool     startRawPrev = false;
+static uint32_t startRawLastMs = 0;
+
 // Calibration
-static const int32_t CAL_FLOW_U_X100 = 100;  // 1.00 u/min
+static const int32_t CAL_FLOW_U_X100 = 100; // 1.00 u/min
 static uint16_t calTotalSec = 60;
 static uint32_t calStartMs = 0;
 static uint32_t calDurationMs = 60000UL;
 
-static int32_t calMeasuredMl_x100 = 0;  // 0..9999 (0.00..99.99 ml)
-static uint8_t calDigitIdx = 0;         // 0..3 (tens, ones, tenths, hundredths)
+static int32_t calMeasuredMl_x100 = 0; // 0..9999 (0.00..99.99 ml)
+static uint8_t calDigitIdx = 0;        // 0..3 (tens, ones, tenths, hundredths)
 
-static int32_t clampI32(int32_t v, int32_t lo, int32_t hi) {
-  return (v < lo) ? lo : (v > hi) ? hi
-                                  : v;
-}
+static int32_t clampI32(int32_t v, int32_t lo, int32_t hi) { return (v < lo) ? lo : (v > hi) ? hi : v; }
 
 static int32_t potMap(uint16_t adc, int32_t mn, int32_t mx) {
   if (mx < mn) mx = mn;
@@ -79,8 +80,8 @@ static void enterMenu() {
   menuReset(menu);
   uiClear();
 }
+
 static void enterWizardSafe() {
-  // stop pump if running
   if (state == ST_RUN || state == ST_CAL_RUN) {
     digitalWrite(PIN_START_LED, LOW);
     pumpStop();
@@ -115,9 +116,9 @@ static uint8_t getDigit(int32_t ml_x100, uint8_t idx) {
   ml_x100 = clampI32(ml_x100, 0, 9999);
   switch (idx) {
     case 0: return (ml_x100 / 1000) % 10;
-    case 1: return (ml_x100 / 100) % 10;
-    case 2: return (ml_x100 / 10) % 10;
-    default: return (ml_x100 / 1) % 10;
+    case 1: return (ml_x100 / 100)  % 10;
+    case 2: return (ml_x100 / 10)   % 10;
+    default:return (ml_x100 / 1)    % 10;
   }
 }
 
@@ -126,14 +127,14 @@ static int32_t setDigit(int32_t ml_x100, uint8_t idx, uint8_t digit) {
   digit %= 10;
 
   int32_t tens = (ml_x100 / 1000) % 10;
-  int32_t ones = (ml_x100 / 100) % 10;
-  int32_t tent = (ml_x100 / 10) % 10;
-  int32_t hund = (ml_x100 / 1) % 10;
+  int32_t ones = (ml_x100 / 100)  % 10;
+  int32_t tent = (ml_x100 / 10)   % 10;
+  int32_t hund = (ml_x100 / 1)    % 10;
 
-  if (idx == 0) tens = digit;
+  if      (idx == 0) tens = digit;
   else if (idx == 1) ones = digit;
   else if (idx == 2) tent = digit;
-  else hund = digit;
+  else               hund = digit;
 
   return clampI32(tens * 1000 + ones * 100 + tent * 10 + hund, 0, 9999);
 }
@@ -141,7 +142,7 @@ static int32_t setDigit(int32_t ml_x100, uint8_t idx, uint8_t digit) {
 static void saveCalibrationFromInput() {
   if (calMeasuredMl_x100 <= 0) return;
 
-  uint32_t total_u_x100 = (uint32_t)calTotalSec * 100UL / 60UL;  // exact for 60/120
+  uint32_t total_u_x100 = (uint32_t)calTotalSec * 100UL / 60UL; // exact for 60/120
   if (total_u_x100 == 0) return;
 
   uint32_t ml_per_u_x1000 = (uint32_t)calMeasuredMl_x100 * 1000UL / total_u_x100;
@@ -166,6 +167,10 @@ void setup() {
   (void)potGetAvgAdc();
   recomputeRecAndRange();
   uiDrawReady(S);
+
+  // HARD START init
+  startRawPrev = (digitalRead(PIN_START_BTN) == LOW);
+  startRawLastMs = millis();
 }
 
 void loop() {
@@ -181,24 +186,34 @@ void loop() {
   if (millis() - tPoll >= INPUT_POLL_MS) {
     tPoll = millis();
 
-
     InputEvents ev;
     inputPoll(ev);
-    // LONG OK -> Wizard (безопасно)
+
+    // HARD START override (direct pin)
+    {
+      bool sNow = (digitalRead(PIN_START_BTN) == LOW);
+      if (sNow && !startRawPrev) {
+        if ((uint16_t)(millis() - startRawLastMs) >= 60) {
+          ev.startClick = true;
+          startRawLastMs = millis();
+        }
+      }
+      startRawPrev = sNow;
+    }
+
+    // LONG OK -> Wizard safely
     if (ev.encLong) {
       enterWizardSafe();
     }
 
-
     // POT only in WIZ_REC / RUN
     if (state == ST_WIZ_REC || state == ST_RUN) {
       int32_t newSet = potMap(potGetAvgAdc(), potMin_x100, potMax_x100);
-      int32_t diff = newSet - set_x100;
-      if (diff < 0) diff = -diff;
+      int32_t diff = newSet - set_x100; if (diff < 0) diff = -diff;
       if (diff >= (int32_t)S.pot_hyst_x100) set_x100 = newSet;
     }
 
-    // UP/DOWN (encStep used as +1/-1)
+    // UP/DOWN
     if (ev.encStep != 0) {
       if (state == ST_WIZ_MAT) {
         S.material = (S.material == MAT_STEEL) ? MAT_ALUMINUM : MAT_STEEL;
@@ -212,12 +227,12 @@ void loop() {
       } else if (state == ST_CAL_INPUT) {
         uint8_t d = getDigit(calMeasuredMl_x100, calDigitIdx);
         if (ev.encStep > 0) d = (uint8_t)((d + 1) % 10);
-        else d = (uint8_t)((d + 9) % 10);
+        else                d = (uint8_t)((d + 9) % 10);
         calMeasuredMl_x100 = setDigit(calMeasuredMl_x100, calDigitIdx, d);
       }
     }
 
-    // OK button
+    // OK short
     if (ev.encClick) {
       if (state == ST_WIZ_MAT) {
         state = ST_WIZ_DIA;
@@ -258,12 +273,12 @@ void loop() {
       }
     }
 
-    // MENU/BACK button
+    // MENU/BACK short
     if (ev.menuClick) {
       if (state == ST_READY) {
         enterMenu();
       } else if (state == ST_WIZ_REC || state == ST_RUN) {
-        enterMenu();  // safety: stops pump inside enterMenu()
+        enterMenu();
       } else if (state == ST_MENU) {
         state = ST_READY;
         uiClear();
@@ -279,7 +294,7 @@ void loop() {
       }
     }
 
-    // START/STOP button
+    // START/STOP
     if (ev.startClick) {
       if (state == ST_READY) {
         if (!wizardDone) {
@@ -289,77 +304,72 @@ void loop() {
           recomputeRecAndRange();
           startRun();
         }
+      } else if (state == ST_WIZ_MAT || state == ST_WIZ_DIA) {
+        state = ST_READY;
+        uiClear();
+      } else if (state == ST_WIZ_REC) {
+        wizardDone = true;
+        startRun();
+      } else if (state == ST_RUN) {
+        stopRunToReady();
+      } else if (state == ST_MENU) {
+        state = ST_READY;
+        uiClear();
+      } else if (state == ST_CAL_RUN) {
+        stopCalibrationPump();
+        state = ST_MENU;
+        menuReset(menu);
+        uiClear();
+      } else if (state == ST_CAL_INPUT) {
+        state = ST_MENU;
+        menuReset(menu);
+        uiClear();
       }
+    }
+  }
 
-    } else if (state == ST_WIZ_MAT || state == ST_WIZ_DIA) {
-      state = ST_READY;
-      uiClear();
-    } else if (state == ST_WIZ_REC) {
-      startRun();
-    } else if (state == ST_RUN) {
-      stopRunToReady();
-    } else if (state == ST_MENU) {
-      state = ST_READY;
-      uiClear();
-    } else if (state == ST_CAL_RUN) {
+  // Runtime (pump)
+  if (state == ST_RUN) {
+    if (S.mode == MODE_CONT) pumpRunCont(set_x100, S.pump_gain_steps_per_u_min);
+    else pumpRunPulse(pulseOn, pulseMs, S, set_x100);
+  } else if (state == ST_CAL_RUN) {
+    pumpRunCont(CAL_FLOW_U_X100, S.pump_gain_steps_per_u_min);
+
+    if ((millis() - calStartMs) >= calDurationMs) {
       stopCalibrationPump();
-      state = ST_MENU;
-      menuReset(menu);
+      state = ST_CAL_INPUT;
       uiClear();
-    } else if (state == ST_CAL_INPUT) {
-      state = ST_MENU;
-      menuReset(menu);
-      uiClear();
-    
+    }
   }
-}
 
-// Runtime (pump)
-if (state == ST_RUN) {
-  if (S.mode == MODE_CONT) pumpRunCont(set_x100, S.pump_gain_steps_per_u_min);
-  else pumpRunPulse(pulseOn, pulseMs, S, set_x100);
-} else if (state == ST_CAL_RUN) {
-  pumpRunCont(CAL_FLOW_U_X100, S.pump_gain_steps_per_u_min);
+  // UI refresh
+  if (millis() - tUi >= UI_REFRESH_MS) {
+    tUi = millis();
 
-  if ((millis() - calStartMs) >= calDurationMs) {
-    stopCalibrationPump();
-    state = ST_CAL_INPUT;
-    uiClear();
-  }
-}
+    switch (state) {
+      case ST_READY:    uiDrawReady(S); break;
+      case ST_WIZ_MAT:  uiDrawWizMaterial(S); break;
+      case ST_WIZ_DIA:  uiDrawWizDiameter(S); break;
+      case ST_WIZ_REC:  uiDrawWizRecommend(S, rec_x100, set_x100, potMin_x100, potMax_x100); break;
+      case ST_RUN:      uiDrawRun(S, rec_x100, set_x100, true); break;
 
-// UI refresh
-if (millis() - tUi >= UI_REFRESH_MS) {
-  tUi = millis();
-
-  switch (state) {
-    case ST_READY: uiDrawReady(S); break;
-    case ST_WIZ_MAT: uiDrawWizMaterial(S); break;
-    case ST_WIZ_DIA: uiDrawWizDiameter(S); break;
-    case ST_WIZ_REC: uiDrawWizRecommend(S, rec_x100, set_x100, potMin_x100, potMax_x100); break;
-    case ST_RUN: uiDrawRun(S, rec_x100, set_x100, true); break;
-
-    case ST_MENU:
-      {
+      case ST_MENU: {
         char l1[21], l2[21], l3[21];
         menuRender3(menu, S, l1, l2, l3);
         uiDrawMenu(menu.editing, l1, l2, l3);
-      }
-      break;
+      } break;
 
-    case ST_CAL_RUN:
-      {
+      case ST_CAL_RUN: {
         uint32_t elapsed = millis() - calStartMs;
         uint16_t left = (elapsed >= calDurationMs) ? 0 : (uint16_t)((calDurationMs - elapsed) / 1000UL);
         uiDrawCalRun(calTotalSec, left);
-      }
-      break;
+      } break;
 
-    case ST_CAL_INPUT:
-      uiDrawCalInputDigits(calMeasuredMl_x100, calDigitIdx);
-      break;
+      case ST_CAL_INPUT:
+        uiDrawCalInputDigits(calMeasuredMl_x100, calDigitIdx);
+        break;
 
-    default: break;
+      default: break;
+    }
   }
-}
 }

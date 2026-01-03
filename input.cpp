@@ -1,86 +1,36 @@
 #include "config.h"
 #include "input.h"
 
-static inline bool isPressedPullup(uint8_t pin) { return digitalRead(pin) == LOW; }
+static inline bool pressed(uint8_t pin) { return digitalRead(pin) == LOW; }
 
-struct DebouncedButton {
-  uint8_t pin = 0;
-  bool stable = false;      // debounced level (pressed=true)
-  bool lastRead = false;    // raw read
-  uint32_t lastChange = 0;
-
-  void begin(uint8_t p) {
-    pin = p;
-    stable = isPressedPullup(pin);
-    lastRead = stable;
-    lastChange = millis();
-  }
-
-  bool update(uint16_t db_ms = 25) {
-    bool r = isPressedPullup(pin);
-    if (r != lastRead) {
-      lastRead = r;
-      lastChange = millis();
-    }
-    if ((millis() - lastChange) >= db_ms && stable != lastRead) {
-      stable = lastRead;
-      return true;
-    }
-    return false;
-  }
-
-  bool isPressed() const { return stable; }
-
-  bool pressedEdge(uint16_t db_ms = 25) {
-    bool changed = update(db_ms);
-    return (changed && stable);
-  }
-
-  bool releasedEdge(uint16_t db_ms = 25) {
-    bool changed = update(db_ms);
-    return (changed && !stable);
-  }
-};
-
-static DebouncedButton bStart, bUp, bDown, bOk, bMenu;
-
-// ===== Hold repeat (ускорение UP/DOWN) =====
-struct HoldRepeat {
-  bool active = false;
-  uint32_t pressMs = 0;
-  uint32_t lastRptMs = 0;
-
-  void onPress(uint32_t now) {
-    active = true;
-    pressMs = now;
-    lastRptMs = now;
-  }
-  void onRelease() { active = false; }
-
-  int8_t pollRepeat(uint32_t now) {
-    if (!active) return 0;
-
-    uint32_t held = now - pressMs;
-
-    uint16_t interval;
-    if      (held < 400)  interval = 180;
-    else if (held < 900)  interval = 120;
-    else if (held < 1600) interval = 70;
-    else                  interval = 45;
-
-    if ((now - lastRptMs) < interval) return 0;
-    lastRptMs = now;
-    return 1;
-  }
-};
-
-static HoldRepeat upHold, downHold;
-
-// ===== OK long press =====
-static bool okPressed = false;
+// OK long
+static bool prevOk = false;
 static bool okLongFired = false;
 static uint32_t okPressMs = 0;
-static constexpr uint16_t OK_LONG_MS = 700;
+static const uint16_t OK_LONG_MS = 700;
+
+// MENU short
+static bool prevMenu = false;
+
+// UP/DOWN accel
+static bool prevUp = false;
+static bool prevDown = false;
+static uint32_t upPressMs = 0, upLastRptMs = 0;
+static uint32_t dnPressMs = 0, dnLastRptMs = 0;
+
+static int8_t holdRepeat(uint32_t now, uint32_t pressMs, uint32_t &lastRptMs) {
+  uint32_t held = now - pressMs;
+
+  uint16_t interval;
+  if      (held < 400)  interval = 180;
+  else if (held < 900)  interval = 120;
+  else if (held < 1600) interval = 70;
+  else                  interval = 45;
+
+  if ((now - lastRptMs) < interval) return 0;
+  lastRptMs = now;
+  return 1;
+}
 
 // ===== POT filter =====
 static uint16_t potBuf[16];
@@ -128,11 +78,13 @@ void inputBegin() {
 
   pinMode(PIN_POT, INPUT);
 
-  bStart.begin(PIN_START_BTN);
-  bUp.begin(PIN_BTN_UP);
-  bDown.begin(PIN_BTN_DOWN);
-  bOk.begin(PIN_BTN_OK);
-  bMenu.begin(PIN_BTN_MENU);
+  prevOk   = pressed(PIN_BTN_OK);
+  prevMenu = pressed(PIN_BTN_MENU);
+  prevUp   = pressed(PIN_BTN_UP);
+  prevDown = pressed(PIN_BTN_DOWN);
+
+  okLongFired = false;
+  okPressMs = millis();
 
   potSetFilterN(8);
   potUpdate();
@@ -142,41 +94,29 @@ void inputPoll(InputEvents &ev) {
   ev = {};
   uint32_t now = millis();
 
-  // --- UP/DOWN: short + ускорение удержанием
-  if (bUp.pressedEdge()) {
-    ev.encStep += +1;
-    upHold.onPress(now);
-  }
-  if (bUp.releasedEdge()) upHold.onRelease();
+  bool o = pressed(PIN_BTN_OK);
+  bool m = pressed(PIN_BTN_MENU);
+  bool u = pressed(PIN_BTN_UP);
+  bool d = pressed(PIN_BTN_DOWN);
 
-  if (bDown.pressedEdge()) {
-    ev.encStep += -1;
-    downHold.onPress(now);
-  }
-  if (bDown.releasedEdge()) downHold.onRelease();
+  // MENU short
+  if (m && !prevMenu) ev.menuClick = true;
 
-  if (upHold.active)   ev.encStep += upHold.pollRepeat(now);
-  if (downHold.active) ev.encStep -= downHold.pollRepeat(now);
+  // UP/DOWN + accel
+  if (u && !prevUp) { ev.encStep += +1; upPressMs = now; upLastRptMs = now; }
+  if (d && !prevDown){ ev.encStep += -1; dnPressMs = now; dnLastRptMs = now; }
+  if (u) ev.encStep += holdRepeat(now, upPressMs, upLastRptMs);
+  if (d) ev.encStep -= holdRepeat(now, dnPressMs, dnLastRptMs);
 
-  // --- OK: short vs long
-  if (bOk.pressedEdge()) {
-    okPressed = true;
-    okLongFired = false;
-    okPressMs = now;
-  }
-  if (okPressed && !okLongFired && bOk.isPressed() && (now - okPressMs) >= OK_LONG_MS) {
-    ev.encLong = true;
-    okLongFired = true;
-  }
-  if (bOk.releasedEdge()) {
-    if (okPressed && !okLongFired) ev.encClick = true;
-    okPressed = false;
-  }
+  // OK short/long
+  if (o && !prevOk) { okPressMs = now; okLongFired = false; }
+  if (o && !okLongFired && (uint16_t)(now - okPressMs) >= OK_LONG_MS) { ev.encLong = true; okLongFired = true; }
+  if (!o && prevOk) { if (!okLongFired) ev.encClick = true; }
 
-  // --- MENU / START short
-  ev.menuClick  = bMenu.pressedEdge();
-  ev.startClick = bStart.pressedEdge();
+  prevOk = o;
+  prevMenu = m;
+  prevUp = u;
+  prevDown = d;
 
-  // POT
   potUpdate();
 }

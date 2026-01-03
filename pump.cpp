@@ -3,7 +3,6 @@
 #include "pump.h"
 
 static volatile bool stepEnable = false;
-static volatile bool stepState = false;
 
 // ===== Timer1 init =====
 static void timer1Init() {
@@ -17,16 +16,18 @@ static void timer1Init() {
   // prescaler = 8
   TCCR1B |= (1 << CS11);
 
-  OCR1A = 2000; // default, will be changed
+  OCR1A = 2000;
 
-  TIMSK1 |= (1 << OCIE1A);
+  // start disabled
+  TIMSK1 &= ~(1 << OCIE1A);
+
   sei();
 }
 
 // ===== Set step frequency (Hz) =====
 static void pumpSetRateHz(uint16_t hz) {
   if (hz < 1) hz = 1;
-  if (hz > 2000) hz = 2000; // безопасный максимум
+  if (hz > 2000) hz = 2000;
 
   uint32_t ocr = (F_CPU / 8UL / hz) - 1;
   OCR1A = (uint16_t)ocr;
@@ -34,9 +35,8 @@ static void pumpSetRateHz(uint16_t hz) {
 
 // ===== STEP ISR =====
 ISR(TIMER1_COMPA_vect) {
-  //if (!stepEnable) return;
+  if (!stepEnable) return;
 
-  // правильный STEP импульс для DM556
   digitalWrite(PIN_STEP, HIGH);
   delayMicroseconds(4);
   digitalWrite(PIN_STEP, LOW);
@@ -49,51 +49,65 @@ void pumpBegin() {
   pinMode(PIN_ENA, OUTPUT);
 
   digitalWrite(PIN_STEP, LOW);
-  digitalWrite(PIN_DIR, HIGH);   // направление любое
-  digitalWrite(PIN_ENA, LOW);    // disabled initially
+  digitalWrite(PIN_DIR, HIGH);
+  digitalWrite(PIN_ENA, LOW);
 
   timer1Init();
 }
 
 void pumpSetEnable(bool en) {
   stepEnable = en;
+  if (en) TIMSK1 |= (1 << OCIE1A);
+  else    TIMSK1 &= ~(1 << OCIE1A);
+
+  // ENA не используется по твоей схеме, но оставим как было:
   digitalWrite(PIN_ENA, en ? HIGH : LOW);
+}
+
+void pumpStartSteps(uint32_t stepsPerSec) {
+  if (stepsPerSec == 0) {
+    pumpStop();
+    return;
+  }
+  if (stepsPerSec > 2000) stepsPerSec = 2000;
+  pumpSetRateHz((uint16_t)stepsPerSec);
+  pumpSetEnable(true);
 }
 
 void pumpStop() {
   stepEnable = false;
+  TIMSK1 &= ~(1 << OCIE1A);
   digitalWrite(PIN_ENA, LOW);
 }
 
 // ===== Continuous mode =====
-// flow_x100: 1.00 u/min = 100
 void pumpRunCont(int32_t flow_x100, uint32_t pumpGain) {
   if (flow_x100 <= 0 || pumpGain == 0) {
     pumpStop();
     return;
   }
 
-  // steps/min = flow * gain
-  uint64_t stepsPerMin =
-    ((uint64_t)flow_x100 * (uint64_t)pumpGain) / 100ULL;
-
+  uint64_t stepsPerMin = ((uint64_t)flow_x100 * (uint64_t)pumpGain) / 100ULL;
   if (stepsPerMin == 0) {
     pumpStop();
     return;
   }
 
-  // steps/sec (округление вверх)
-  uint32_t hz = (stepsPerMin + 59) / 60;
+  uint32_t hz = (uint32_t)((stepsPerMin + 59) / 60);
   if (hz < 1) hz = 1;
+  if (hz > 2000) hz = 2000;
 
   pumpSetRateHz((uint16_t)hz);
-  stepEnable = true;
+  pumpSetEnable(true);
 }
 
-// ===== Pulse mode (заглушка, если нужен) =====
-void pumpRunPulse(bool &pulseOn,
-                  uint32_t &pulseMs,
+// ===== Pulse mode (пока заглушка) =====
+void pumpRunPulse(bool &phaseOn,
+                  uint32_t &phaseStartMs,
                   const Settings &S,
                   int32_t flow_x100) {
-  // Пока не используем — можно дописать позже
+  (void)phaseOn;
+  (void)phaseStartMs;
+  (void)S;
+  (void)flow_x100;
 }
