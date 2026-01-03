@@ -24,6 +24,11 @@ static uint32_t pulseMs = 0;
 static bool     startRawPrev = false;
 static uint32_t startRawLastMs = 0;
 
+// HARD DIA ACCEL (direct UP/DOWN only in ST_WIZ_DIA)
+static bool     upPrev = false, dnPrev = false;
+static uint32_t upPressMs = 0, dnPressMs = 0;
+static uint32_t upLastRptMs = 0, dnLastRptMs = 0;
+
 // Calibration
 static const int32_t CAL_FLOW_U_X100 = 100; // 1.00 u/min
 static uint16_t calTotalSec = 60;
@@ -142,7 +147,7 @@ static int32_t setDigit(int32_t ml_x100, uint8_t idx, uint8_t digit) {
 static void saveCalibrationFromInput() {
   if (calMeasuredMl_x100 <= 0) return;
 
-  uint32_t total_u_x100 = (uint32_t)calTotalSec * 100UL / 60UL; // exact for 60/120
+  uint32_t total_u_x100 = (uint32_t)calTotalSec * 100UL / 60UL;
   if (total_u_x100 == 0) return;
 
   uint32_t ml_per_u_x1000 = (uint32_t)calMeasuredMl_x100 * 1000UL / total_u_x100;
@@ -151,6 +156,40 @@ static void saveCalibrationFromInput() {
   S.calibrated = true;
   S.ml_per_u_x1000 = ml_per_u_x1000;
   settingsSave();
+}
+
+// ---- helper: accelerated diameter steps only in ST_WIZ_DIA
+static int8_t diaAccelStep(bool pressedNow, bool &prev, uint32_t &pressMs, uint32_t &lastRptMs, int8_t dir) {
+  uint32_t now = millis();
+  int8_t out = 0;
+
+  if (pressedNow && !prev) { // press edge
+    pressMs = now;
+    lastRptMs = now;
+    out = dir * 1; // first step always 1mm
+  }
+
+  if (pressedNow) {
+    uint32_t held = now - pressMs;
+
+    int8_t stepSize = 1;
+    if (held >= 1500) stepSize = 10;
+    else if (held >= 600) stepSize = 5;
+
+    uint16_t interval;
+    if      (held < 300)  interval = 180;
+    else if (held < 900)  interval = 120;
+    else if (held < 1600) interval = 80;
+    else                  interval = 55;
+
+    if ((now - lastRptMs) >= interval) {
+      lastRptMs = now;
+      out += (int8_t)(dir * stepSize);
+    }
+  }
+
+  prev = pressedNow;
+  return out;
 }
 
 void setup() {
@@ -171,6 +210,12 @@ void setup() {
   // HARD START init
   startRawPrev = (digitalRead(PIN_START_BTN) == LOW);
   startRawLastMs = millis();
+
+  // HARD DIA init
+  upPrev = (digitalRead(PIN_BTN_UP) == LOW);
+  dnPrev = (digitalRead(PIN_BTN_DOWN) == LOW);
+  upPressMs = dnPressMs = millis();
+  upLastRptMs = dnLastRptMs = millis();
 }
 
 void loop() {
@@ -204,6 +249,22 @@ void loop() {
     // LONG OK -> Wizard safely
     if (ev.encLong) {
       enterWizardSafe();
+    }
+
+    // HARD DIA accel override (only in ST_WIZ_DIA)
+    if (state == ST_WIZ_DIA) {
+      // ignore ev.encStep from input.cpp here
+      ev.encStep = 0;
+
+      bool upNow = (digitalRead(PIN_BTN_UP) == LOW);
+      bool dnNow = (digitalRead(PIN_BTN_DOWN) == LOW);
+
+      ev.encStep += diaAccelStep(upNow, upPrev, upPressMs, upLastRptMs, +1);
+      ev.encStep += diaAccelStep(dnNow, dnPrev, dnPressMs, dnLastRptMs, -1);
+    } else {
+      // keep prev states updated so first accel press is correct when enter ST_WIZ_DIA
+      upPrev = (digitalRead(PIN_BTN_UP) == LOW);
+      dnPrev = (digitalRead(PIN_BTN_DOWN) == LOW);
     }
 
     // POT only in WIZ_REC / RUN
